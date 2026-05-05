@@ -862,7 +862,7 @@ export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST
     const hints: string[] = [];
     if (!cliExists) {
       hints.push(
-        'apps/daemon/dist/cli.js is missing. Run `pnpm --filter @open-design/daemon build` (or just `pnpm build`) and refresh.',
+        'apps/daemon/dist/cli.js is missing. Run `pnpm --filter @open-design/daemon build` and refresh.',
       );
     }
     if (!nodeExists) {
