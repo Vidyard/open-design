@@ -5,6 +5,7 @@ const API_PROTOCOL_LABELS: Record<ApiProtocol, string> = {
   openai: 'OpenAI API',
   azure: 'Azure OpenAI',
   google: 'Google Gemini',
+  bedrock: 'AWS Bedrock',
 };
 
 const API_PROTOCOL_AGENT_IDS: Record<ApiProtocol, string> = {
@@ -12,6 +13,7 @@ const API_PROTOCOL_AGENT_IDS: Record<ApiProtocol, string> = {
   openai: 'openai-api',
   azure: 'azure-openai-api',
   google: 'google-gemini-api',
+  bedrock: 'aws-bedrock-api',
 };
 
 export function apiProtocolLabel(protocol: ApiProtocol | undefined): string {

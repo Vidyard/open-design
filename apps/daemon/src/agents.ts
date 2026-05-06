@@ -1258,6 +1258,13 @@ export function spawnEnvForAgent(agentId, baseEnv, configuredEnv = {}) {
       env[k].trim() !== '',
   );
   if (hasCustomBaseUrl) return env;
+  // Bedrock-mode Claude Code authenticates via AWS_REGION + AWS creds, not
+  // ANTHROPIC_API_KEY. Leave the key in place so toggling Bedrock back off
+  // is graceful — the SDK ignores it while CLAUDE_CODE_USE_BEDROCK=1.
+  const bedrockEnabled = Object.keys(env).some(
+    (k) => k.toUpperCase() === 'CLAUDE_CODE_USE_BEDROCK' && env[k] === '1',
+  );
+  if (bedrockEnabled) return env;
   for (const key of Object.keys(env)) {
     if (key.toUpperCase() === 'ANTHROPIC_API_KEY') delete env[key];
   }

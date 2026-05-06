@@ -3,34 +3,23 @@ import type { AppConfig, ChatMessage } from '../types';
 import type { StreamHandlers } from './anthropic';
 import { parseSseFrame } from './sse';
 
-export async function streamProxyEndpoint(
+// Shared SSE consumer for any daemon proxy that emits the
+// start/delta/error/end event contract. Callers build the request body
+// themselves and POST to the endpoint; this helper handles transport
+// errors, frame parsing, and routing events to handlers.
+export async function consumeProxySseStream(
   endpoint: string,
-  cfg: AppConfig,
-  system: string,
-  history: ChatMessage[],
+  body: Record<string, unknown>,
   signal: AbortSignal,
   handlers: StreamHandlers,
 ): Promise<void> {
-  if (!cfg.apiKey) {
-    handlers.onError(new Error('Missing API key — open Settings and paste one in.'));
-    return;
-  }
-
   let acc = '';
 
   try {
     const resp = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        baseUrl: cfg.baseUrl,
-        apiKey: cfg.apiKey,
-        model: cfg.model,
-        systemPrompt: system,
-        messages: history.map((m) => ({ role: m.role, content: m.content })),
-        maxTokens: effectiveMaxTokens(cfg),
-        apiVersion: cfg.apiVersion,
-      }),
+      body: JSON.stringify(body),
       signal,
     });
 
@@ -84,6 +73,35 @@ export async function streamProxyEndpoint(
     if ((err as Error).name === 'AbortError') return;
     handlers.onError(err instanceof Error ? err : new Error(String(err)));
   }
+}
+
+export async function streamProxyEndpoint(
+  endpoint: string,
+  cfg: AppConfig,
+  system: string,
+  history: ChatMessage[],
+  signal: AbortSignal,
+  handlers: StreamHandlers,
+): Promise<void> {
+  if (!cfg.apiKey) {
+    handlers.onError(new Error('Missing API key — open Settings and paste one in.'));
+    return;
+  }
+
+  return consumeProxySseStream(
+    endpoint,
+    {
+      baseUrl: cfg.baseUrl,
+      apiKey: cfg.apiKey,
+      model: cfg.model,
+      systemPrompt: system,
+      messages: history.map((m) => ({ role: m.role, content: m.content })),
+      maxTokens: effectiveMaxTokens(cfg),
+      apiVersion: cfg.apiVersion,
+    },
+    signal,
+    handlers,
+  );
 }
 
 function proxyErrorMessage(data: Record<string, unknown>): string {

@@ -185,6 +185,37 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     model: 'mimo-v2.5-pro',
     models: ['mimo-v2.5-pro'],
   },
+  {
+    label: 'AWS Bedrock (Claude)',
+    protocol: 'bedrock',
+    // baseUrl is unused for Bedrock — region comes from awsBedrock prefs.
+    baseUrl: '',
+    // Bedrock dropped the date-stamp suffix from Anthropic model IDs in
+    // 2026-02 (Sonnet 4.6 / Opus 4.6) onward. Older 3.5 ids keep the
+    // dated form because that's the canonical name they shipped under.
+    model: 'us.anthropic.claude-opus-4-7',
+    models: [
+      // Claude Opus 4.7 — Apr 2026, latest flagship.
+      'us.anthropic.claude-opus-4-7',
+      'eu.anthropic.claude-opus-4-7',
+      'global.anthropic.claude-opus-4-7',
+      'anthropic.claude-opus-4-7',
+      // Claude Opus 4.6.
+      'us.anthropic.claude-opus-4-6',
+      'global.anthropic.claude-opus-4-6',
+      'anthropic.claude-opus-4-6',
+      // Claude Sonnet 4.6 — Opus-class capability at Sonnet pricing.
+      'us.anthropic.claude-sonnet-4-6',
+      'global.anthropic.claude-sonnet-4-6',
+      'anthropic.claude-sonnet-4-6',
+      // Claude 4.5 family.
+      'us.anthropic.claude-sonnet-4-5',
+      'us.anthropic.claude-haiku-4-5',
+      // Claude 3.5 — older, retains date-stamped naming.
+      'anthropic.claude-3-5-sonnet-20241022-v2:0',
+      'anthropic.claude-3-5-haiku-20241022-v1:0',
+    ],
+  },
 ];
 
 function normalizePet(input: Partial<PetConfig> | undefined): PetConfig {
@@ -346,6 +377,9 @@ export function mergeDaemonConfig(
   if (daemonConfig.disabledDesignSystems !== undefined) {
     next.disabledDesignSystems = daemonConfig.disabledDesignSystems;
   }
+  if (daemonConfig.awsBedrock !== undefined) {
+    next.awsBedrock = daemonConfig.awsBedrock;
+  }
   return next;
 }
 
@@ -395,6 +429,7 @@ export async function syncConfigToDaemon(config: AppConfig): Promise<void> {
     designSystemId: config.designSystemId,
     disabledSkills: config.disabledSkills,
     disabledDesignSystems: config.disabledDesignSystems,
+    awsBedrock: config.awsBedrock,
   };
   try {
     await fetch('/api/app-config', {

@@ -111,6 +111,22 @@ const SUGGESTED_MODELS_BY_PROTOCOL = {
     'gemini-1.5-pro',
     'gemini-1.5-flash',
   ],
+  bedrock: [
+    'us.anthropic.claude-opus-4-7',
+    'eu.anthropic.claude-opus-4-7',
+    'global.anthropic.claude-opus-4-7',
+    'anthropic.claude-opus-4-7',
+    'us.anthropic.claude-opus-4-6',
+    'global.anthropic.claude-opus-4-6',
+    'anthropic.claude-opus-4-6',
+    'us.anthropic.claude-sonnet-4-6',
+    'global.anthropic.claude-sonnet-4-6',
+    'anthropic.claude-sonnet-4-6',
+    'us.anthropic.claude-sonnet-4-5',
+    'us.anthropic.claude-haiku-4-5',
+    'anthropic.claude-3-5-sonnet-20241022-v2:0',
+    'anthropic.claude-3-5-haiku-20241022-v1:0',
+  ],
 } as const;
 
 const API_PROTOCOL_TABS: Array<{
@@ -121,6 +137,7 @@ const API_PROTOCOL_TABS: Array<{
   { id: 'openai', title: 'OpenAI' },
   { id: 'azure', title: 'Azure OpenAI' },
   { id: 'google', title: 'Google Gemini' },
+  { id: 'bedrock', title: 'AWS Bedrock' },
 ];
 
 const API_PROTOCOL_LABELS: Record<ApiProtocol, string> = {
@@ -128,6 +145,7 @@ const API_PROTOCOL_LABELS: Record<ApiProtocol, string> = {
   openai: 'OpenAI API',
   azure: 'Azure OpenAI',
   google: 'Google Gemini',
+  bedrock: 'AWS Bedrock',
 };
 
 const API_KEY_PLACEHOLDERS: Record<ApiProtocol, string> = {
@@ -135,6 +153,7 @@ const API_KEY_PLACEHOLDERS: Record<ApiProtocol, string> = {
   openai: 'sk-...',
   azure: 'azure key',
   google: 'AIza...',
+  bedrock: '(unused — uses AWS credentials)',
 };
 
 type RescanNotice =
@@ -465,11 +484,16 @@ export function SettingsDialog({
   const canSave =
     cfg.mode === 'daemon'
       ? Boolean(cfg.agentId && agents.find((a) => a.id === cfg.agentId)?.available)
-      : Boolean(
-          cfg.apiKey.trim() &&
-          cfg.model.trim() &&
-          baseUrlValid,
-        );
+      : apiProtocol === 'bedrock'
+        // Bedrock auth lives in awsBedrock prefs, not apiKey/baseUrl. The
+        // region is the only required field; creds come from the AWS SDK
+        // default chain (env / shared config / IAM role / SSO).
+        ? Boolean(cfg.awsBedrock?.region.trim())
+        : Boolean(
+            cfg.apiKey.trim() &&
+            cfg.model.trim() &&
+            baseUrlValid,
+          );
 
   const protocolProviders = useMemo(
     () => KNOWN_PROVIDERS.filter((p) => p.protocol === apiProtocol),
@@ -938,6 +962,8 @@ export function SettingsDialog({
                 </div>
               </div>
             </section>
+          ) : apiProtocol === 'bedrock' ? (
+            <BedrockConfigSection cfg={cfg} setCfg={setCfg} />
           ) : (
             <section className="settings-section">
               <div className="section-head">
@@ -1310,6 +1336,312 @@ function ComposioSection({
   );
 }
 
+// Common Bedrock-supported regions; the input is free-form so users on
+// new regions can type anything that matches the validator's regex.
+const BEDROCK_COMMON_REGIONS = [
+  'us-east-1',
+  'us-east-2',
+  'us-west-2',
+  'eu-central-1',
+  'eu-west-1',
+  'eu-west-3',
+  'ap-northeast-1',
+  'ap-southeast-1',
+  'ap-southeast-2',
+  'ca-central-1',
+];
+
+// Order matches the SUGGESTED_MODELS_BY_PROTOCOL.bedrock list above so the
+// Settings model dropdown shows newest/most-capable first. Bedrock drops
+// the date stamp on 4.6+; only the legacy 3.5 ids keep their `-YYYYMMDD-vN:0`
+// suffix because that's their canonical name.
+const BEDROCK_CHAT_MODELS = [
+  'us.anthropic.claude-opus-4-7',
+  'eu.anthropic.claude-opus-4-7',
+  'global.anthropic.claude-opus-4-7',
+  'anthropic.claude-opus-4-7',
+  'us.anthropic.claude-opus-4-6',
+  'global.anthropic.claude-opus-4-6',
+  'anthropic.claude-opus-4-6',
+  'us.anthropic.claude-sonnet-4-6',
+  'global.anthropic.claude-sonnet-4-6',
+  'anthropic.claude-sonnet-4-6',
+  'us.anthropic.claude-sonnet-4-5',
+  'us.anthropic.claude-haiku-4-5',
+  'anthropic.claude-3-5-sonnet-20241022-v2:0',
+  'anthropic.claude-3-5-haiku-20241022-v1:0',
+];
+
+type BedrockTestState =
+  | { status: 'idle' }
+  | { status: 'running' }
+  | { status: 'ok'; modelCount: number }
+  | { status: 'error'; message: string };
+
+const PROFILE_CUSTOM_SENTINEL = '__custom__';
+
+function BedrockConfigSection({
+  cfg,
+  setCfg,
+}: {
+  cfg: AppConfig;
+  setCfg: Dispatch<SetStateAction<AppConfig>>;
+}) {
+  const aws = cfg.awsBedrock ?? { region: '' };
+  const region = aws.region ?? '';
+  const profile = aws.profile ?? '';
+  const chatModelId = aws.chatModelId ?? '';
+  const useForClaude = Boolean(aws.useForAgent?.claude);
+  const [testState, setTestState] = useState<BedrockTestState>({ status: 'idle' });
+  const [discoveredProfiles, setDiscoveredProfiles] = useState<string[]>([]);
+  const [profilesSources, setProfilesSources] = useState<string[]>([]);
+
+  // One-shot fetch of profiles discovered on the daemon's machine. Stays
+  // empty if the user has no shared-config files — the form falls back to
+  // a free-form text input in that case.
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/aws/profiles')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!alive || !data) return;
+        if (Array.isArray(data.profiles)) setDiscoveredProfiles(data.profiles);
+        if (Array.isArray(data.sources)) setProfilesSources(data.sources);
+      })
+      .catch(() => {
+        // daemon offline or endpoint missing — leave list empty
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const updateBedrock = (patch: Partial<typeof aws>) =>
+    setCfg((curr) => {
+      const merged = { ...(curr.awsBedrock ?? { region: '' }), ...patch };
+      // Drop the whole block when region clears so the daemon validator
+      // strips it on next sync (avoids stale `useForAgent` flags).
+      if (!merged.region.trim()) {
+        const next = { ...curr };
+        delete next.awsBedrock;
+        return next;
+      }
+      return { ...curr, awsBedrock: merged };
+    });
+
+  const runConnectionTest = async () => {
+    if (!region.trim()) {
+      setTestState({ status: 'error', message: 'Enter a region first.' });
+      return;
+    }
+    setTestState({ status: 'running' });
+    try {
+      const resp = await fetch('/api/aws/bedrock/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          region: region.trim(),
+          ...(profile.trim() ? { profile: profile.trim() } : {}),
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        setTestState({
+          status: 'error',
+          message: data?.error?.message || data?.error || `HTTP ${resp.status}`,
+        });
+        return;
+      }
+      if (data.ok) {
+        setTestState({ status: 'ok', modelCount: data.modelCount ?? 0 });
+      } else {
+        setTestState({ status: 'error', message: data.error || 'unknown error' });
+      }
+    } catch (err) {
+      setTestState({
+        status: 'error',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  return (
+    <section className="settings-section">
+      <div className="section-head">
+        <div>
+          <h3>AWS Bedrock</h3>
+          <p className="hint">
+            Routes Claude (and the Bedrock-only image models) through your AWS
+            account. Credentials come from the AWS SDK default chain — env
+            vars, shared config, IAM role, or SSO. Nothing typed here is an
+            access key.
+          </p>
+        </div>
+      </div>
+      <label className="field">
+        <span className="field-label">Region</span>
+        <input
+          type="text"
+          list="bedrock-region-list"
+          value={region}
+          placeholder="us-west-2"
+          onChange={(e) => updateBedrock({ region: e.target.value.trim() })}
+          autoFocus
+        />
+        <datalist id="bedrock-region-list">
+          {BEDROCK_COMMON_REGIONS.map((r) => (
+            <option key={r} value={r} />
+          ))}
+        </datalist>
+      </label>
+      <label className="field">
+        <span className="field-label">AWS profile (optional)</span>
+        {discoveredProfiles.length > 0 ? (
+          <>
+            <select
+              value={
+                !profile
+                  ? ''
+                  : discoveredProfiles.includes(profile)
+                    ? profile
+                    : PROFILE_CUSTOM_SENTINEL
+              }
+              onChange={(e) => {
+                if (e.target.value === '') {
+                  updateBedrock({ profile: '' });
+                } else if (e.target.value === PROFILE_CUSTOM_SENTINEL) {
+                  // Keep whatever the user already typed so the custom
+                  // input below shows it.
+                  updateBedrock({ profile: profile || '' });
+                } else {
+                  updateBedrock({ profile: e.target.value });
+                }
+              }}
+            >
+              <option value="">(default credentials chain)</option>
+              {discoveredProfiles.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+              <option value={PROFILE_CUSTOM_SENTINEL}>Custom…</option>
+            </select>
+            {profile && !discoveredProfiles.includes(profile) ? (
+              <input
+                type="text"
+                value={profile}
+                placeholder="profile-name"
+                onChange={(e) => updateBedrock({ profile: e.target.value.trim() })}
+                style={{ marginTop: 6 }}
+              />
+            ) : null}
+            <p className="hint">
+              {profilesSources.length > 0 ? (
+                <>
+                  Discovered from <code>{profilesSources.join(', ')}</code>.{' '}
+                </>
+              ) : null}
+              Leave blank to use the AWS_PROFILE env var, env credentials, or the
+              attached IAM role.
+            </p>
+          </>
+        ) : (
+          <>
+            <input
+              type="text"
+              value={profile}
+              placeholder="default"
+              onChange={(e) => updateBedrock({ profile: e.target.value.trim() })}
+            />
+            <p className="hint">
+              No AWS shared-config files found. Leave blank to use the
+              AWS_PROFILE env var, env credentials, or the attached IAM role.
+            </p>
+          </>
+        )}
+      </label>
+      <label className="field">
+        <span className="field-label">Default chat model</span>
+        <select
+          value={
+            chatModelId && BEDROCK_CHAT_MODELS.includes(chatModelId)
+              ? chatModelId
+              : chatModelId
+                ? CUSTOM_MODEL_SENTINEL
+                : BEDROCK_CHAT_MODELS[0]
+          }
+          onChange={(e) => {
+            if (e.target.value === CUSTOM_MODEL_SENTINEL) {
+              updateBedrock({ chatModelId: chatModelId || '' });
+            } else {
+              updateBedrock({ chatModelId: e.target.value });
+            }
+          }}
+        >
+          {BEDROCK_CHAT_MODELS.map((m) => (
+            <option value={m} key={m}>
+              {m}
+            </option>
+          ))}
+          <option value={CUSTOM_MODEL_SENTINEL}>Custom (enter below)</option>
+        </select>
+      </label>
+      {chatModelId && !BEDROCK_CHAT_MODELS.includes(chatModelId) ? (
+        <label className="field">
+          <span className="field-label">Custom model id</span>
+          <input
+            type="text"
+            value={chatModelId}
+            placeholder="us.anthropic.claude-..."
+            onChange={(e) => updateBedrock({ chatModelId: e.target.value.trim() })}
+          />
+          <p className="hint">
+            Bedrock uses fully qualified model ids; cross-region inference
+            profiles start with <code>us.</code> / <code>eu.</code>.
+          </p>
+        </label>
+      ) : null}
+      <label className="field">
+        <span className="field-label">Agent runtime</span>
+        <label
+          style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}
+        >
+          <input
+            type="checkbox"
+            checked={useForClaude}
+            onChange={(e) =>
+              updateBedrock({ useForAgent: { claude: e.target.checked } })
+            }
+          />
+          <span>Use Bedrock for Claude Code agent runtime</span>
+        </label>
+        <p className="hint">
+          Sets <code>CLAUDE_CODE_USE_BEDROCK=1</code> and AWS_REGION when
+          spawning Claude Code. Other agents are unaffected.
+        </p>
+      </label>
+      <div className="field" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button
+          type="button"
+          className="ghost"
+          onClick={runConnectionTest}
+          disabled={testState.status === 'running' || !region.trim()}
+        >
+          {testState.status === 'running' ? 'Testing…' : 'Test connection'}
+        </button>
+        {testState.status === 'ok' ? (
+          <span style={{ color: 'var(--ok, #2a7)' }}>
+            ✓ {testState.modelCount} foundation models reachable
+          </span>
+        ) : null}
+        {testState.status === 'error' ? (
+          <span style={{ color: 'var(--err, #c33)' }}>✗ {testState.message}</span>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 function MediaProvidersSection({
   cfg,
   setCfg,
@@ -1324,8 +1656,15 @@ function MediaProvidersSection({
     .sort((a, b) => {
       const aEntry = cfg.mediaProviders?.[a.id];
       const bEntry = cfg.mediaProviders?.[b.id];
-      const aConfigured = Boolean(aEntry?.apiKey.trim() || aEntry?.baseUrl.trim());
-      const bConfigured = Boolean(bEntry?.apiKey.trim() || bEntry?.baseUrl.trim());
+      const bedrockConfigured = Boolean(cfg.awsBedrock?.region);
+      const aConfigured =
+        a.id === 'bedrock'
+          ? bedrockConfigured
+          : Boolean(aEntry?.apiKey.trim() || aEntry?.baseUrl.trim());
+      const bConfigured =
+        b.id === 'bedrock'
+          ? bedrockConfigured
+          : Boolean(bEntry?.apiKey.trim() || bEntry?.baseUrl.trim());
       if (aConfigured !== bConfigured) return aConfigured ? -1 : 1;
       if (a.integrated !== b.integrated) return a.integrated ? -1 : 1;
       return a.label.localeCompare(b.label);
@@ -1358,7 +1697,10 @@ function MediaProvidersSection({
       <div className="media-provider-list">
         {providers.map((provider) => {
           const entry = cfg.mediaProviders?.[provider.id] ?? { apiKey: '', baseUrl: '', model: '' };
-          const configured = Boolean(entry.apiKey.trim() || entry.baseUrl.trim());
+          const configured =
+            provider.id === 'bedrock'
+              ? Boolean(cfg.awsBedrock?.region)
+              : Boolean(entry.apiKey.trim() || entry.baseUrl.trim());
           const disabled = !provider.integrated;
           const supportsCustomModel = provider.supportsCustomModel === true;
           const clearable = Boolean(entry.apiKey.trim() || entry.baseUrl.trim() || entry.model?.trim());
@@ -1380,40 +1722,50 @@ function MediaProvidersSection({
                   ) : null}
                 </div>
               </div>
-              <div className="media-provider-body">
-                <input
-                  type="password"
-                  value={entry.apiKey}
-                  placeholder={t('settings.mediaProviderPlaceholder')}
-                  aria-label={`${provider.label} ${t('settings.mediaProviderApiKey')}`}
-                  disabled={disabled}
-                  onChange={(e) => updateProvider(provider, { apiKey: e.target.value })}
-                />
-                <input
-                  value={entry.baseUrl}
-                  placeholder={provider.defaultBaseUrl || t('settings.mediaProviderBaseUrlPlaceholder')}
-                  aria-label={`${provider.label} ${t('settings.mediaProviderBaseUrl')}`}
-                  disabled={disabled}
-                  onChange={(e) => updateProvider(provider, { baseUrl: e.target.value })}
-                />
-                {supportsCustomModel ? (
+              {provider.id === 'bedrock' ? (
+                <div className="media-provider-body">
+                  <p className="hint">
+                    Configured via the AWS Bedrock section under Execution.
+                    Region: {cfg.awsBedrock?.region ? <code>{cfg.awsBedrock.region}</code> : <em>not set</em>}
+                    {cfg.awsBedrock?.profile ? <> · profile <code>{cfg.awsBedrock.profile}</code></> : null}
+                  </p>
+                </div>
+              ) : (
+                <div className="media-provider-body">
                   <input
-                    value={entry.model ?? ''}
-                    placeholder="gemini-3.1-flash-image-preview"
-                    aria-label={`${provider.label} model`}
+                    type="password"
+                    value={entry.apiKey}
+                    placeholder={t('settings.mediaProviderPlaceholder')}
+                    aria-label={`${provider.label} ${t('settings.mediaProviderApiKey')}`}
                     disabled={disabled}
-                    onChange={(e) => updateProvider(provider, { model: e.target.value })}
+                    onChange={(e) => updateProvider(provider, { apiKey: e.target.value })}
                   />
-                ) : null}
-                <button
-                  type="button"
-                  className="ghost"
-                  disabled={!clearable}
-                  onClick={() => updateProvider(provider, { apiKey: '', baseUrl: '', model: '' })}
-                >
-                  {t('settings.mediaProviderClear')}
-                </button>
-              </div>
+                  <input
+                    value={entry.baseUrl}
+                    placeholder={provider.defaultBaseUrl || t('settings.mediaProviderBaseUrlPlaceholder')}
+                    aria-label={`${provider.label} ${t('settings.mediaProviderBaseUrl')}`}
+                    disabled={disabled}
+                    onChange={(e) => updateProvider(provider, { baseUrl: e.target.value })}
+                  />
+                  {supportsCustomModel ? (
+                    <input
+                      value={entry.model ?? ''}
+                      placeholder="gemini-3.1-flash-image-preview"
+                      aria-label={`${provider.label} model`}
+                      disabled={disabled}
+                      onChange={(e) => updateProvider(provider, { model: e.target.value })}
+                    />
+                  ) : null}
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={!clearable}
+                    onClick={() => updateProvider(provider, { apiKey: '', baseUrl: '', model: '' })}
+                  >
+                    {t('settings.mediaProviderClear')}
+                  </button>
+                </div>
+              )}
             </div>
           );
         })}

@@ -32,6 +32,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock": "^3.700.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.700.0",
+    "@aws-sdk/credential-providers": "^3.700.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@open-design/contracts": "workspace:*",
     "@open-design/platform": "workspace:*",

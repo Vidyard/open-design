@@ -333,6 +333,83 @@ describe('app-config disabled lists', () => {
   });
 });
 
+describe('app-config awsBedrock', () => {
+  let dataDir: string;
+
+  beforeEach(async () => {
+    dataDir = await mkdtemp(path.join(tmpdir(), 'od-bedrock-'));
+  });
+
+  afterEach(async () => {
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it('persists region + profile + chatModelId + useForAgent', async () => {
+    await writeAppConfig(dataDir, {
+      awsBedrock: {
+        region: 'us-west-2',
+        profile: 'work',
+        chatModelId: 'us.anthropic.claude-sonnet-4-5-20251022-v1:0',
+        useForAgent: { claude: true },
+      },
+    });
+    const cfg = await readAppConfig(dataDir);
+    expect(cfg.awsBedrock).toEqual({
+      region: 'us-west-2',
+      profile: 'work',
+      chatModelId: 'us.anthropic.claude-sonnet-4-5-20251022-v1:0',
+      useForAgent: { claude: true },
+    });
+  });
+
+  it('drops the whole block when region is missing', async () => {
+    await writeAppConfig(dataDir, {
+      awsBedrock: { profile: 'work' } as any,
+    });
+    const cfg = await readAppConfig(dataDir);
+    expect(cfg.awsBedrock).toBeUndefined();
+  });
+
+  it('rejects malformed region', async () => {
+    await writeAppConfig(dataDir, {
+      awsBedrock: { region: 'us-fake-XX' } as any,
+    });
+    const cfg = await readAppConfig(dataDir);
+    expect(cfg.awsBedrock).toBeUndefined();
+  });
+
+  it('rejects profile with bad characters', async () => {
+    await writeAppConfig(dataDir, {
+      awsBedrock: { region: 'us-west-2', profile: 'evil; rm -rf' } as any,
+    });
+    const cfg = await readAppConfig(dataDir);
+    expect(cfg.awsBedrock).toEqual({ region: 'us-west-2' });
+  });
+
+  it('strips unknown keys inside awsBedrock', async () => {
+    await writeAppConfig(dataDir, {
+      awsBedrock: {
+        region: 'us-west-2',
+        secretAccessKey: 'leaked',
+      } as any,
+    });
+    const cfg = await readAppConfig(dataDir);
+    expect(cfg.awsBedrock).toEqual({ region: 'us-west-2' });
+    expect((cfg.awsBedrock as any)?.secretAccessKey).toBeUndefined();
+  });
+
+  it('ignores non-boolean useForAgent.claude', async () => {
+    await writeAppConfig(dataDir, {
+      awsBedrock: {
+        region: 'us-west-2',
+        useForAgent: { claude: 'yes' as any },
+      } as any,
+    });
+    const cfg = await readAppConfig(dataDir);
+    expect(cfg.awsBedrock).toEqual({ region: 'us-west-2' });
+  });
+});
+
 describe('app-config origin guard', () => {
   let server: http.Server;
   let port: number;

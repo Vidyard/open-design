@@ -18,6 +18,13 @@ export interface AgentModelPrefs {
 
 export type AgentCliEnvPrefs = Record<string, Record<string, string>>;
 
+export interface BedrockPrefs {
+  region: string;
+  profile?: string;
+  useForAgent?: { claude?: boolean };
+  chatModelId?: string;
+}
+
 export interface AppConfigPrefs {
   onboardingCompleted?: boolean;
   agentId?: string | null;
@@ -27,6 +34,7 @@ export interface AppConfigPrefs {
   designSystemId?: string | null;
   disabledSkills?: string[];
   disabledDesignSystems?: string[];
+  awsBedrock?: BedrockPrefs;
 }
 
 const ALLOWED_KEYS: ReadonlySet<keyof AppConfigPrefs> = new Set([
@@ -38,6 +46,7 @@ const ALLOWED_KEYS: ReadonlySet<keyof AppConfigPrefs> = new Set([
   'designSystemId',
   'disabledSkills',
   'disabledDesignSystems',
+  'awsBedrock',
 ] as const);
 
 function configFile(dataDir: string): string {
@@ -109,6 +118,38 @@ export function agentCliEnvForAgent(
   return { ...env };
 }
 
+const REGION_RE = /^[a-z]{2}-[a-z-]+-\d$/;
+const PROFILE_RE = /^[A-Za-z0-9._-]{1,64}$/;
+const CHAT_MODEL_RE = /^[A-Za-z0-9._:/-]{1,200}$/;
+
+function validateAwsBedrock(raw: unknown): BedrockPrefs | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const obj = raw as Record<string, unknown>;
+  const region = typeof obj.region === 'string' ? obj.region.trim() : '';
+  if (!region || !REGION_RE.test(region)) return undefined;
+  const result: BedrockPrefs = { region };
+  if (typeof obj.profile === 'string' && obj.profile.trim()) {
+    const trimmed = obj.profile.trim();
+    if (PROFILE_RE.test(trimmed)) result.profile = trimmed;
+  }
+  if (typeof obj.chatModelId === 'string' && obj.chatModelId.trim()) {
+    const trimmed = obj.chatModelId.trim();
+    if (CHAT_MODEL_RE.test(trimmed)) result.chatModelId = trimmed;
+  }
+  if (
+    obj.useForAgent &&
+    typeof obj.useForAgent === 'object' &&
+    !Array.isArray(obj.useForAgent)
+  ) {
+    const ua = obj.useForAgent as Record<string, unknown>;
+    if (typeof ua.claude === 'boolean') {
+      result.useForAgent = { claude: ua.claude };
+    }
+  }
+  return result;
+}
+
 function applyConfigValue(
   target: Record<string, unknown>,
   key: keyof AppConfigPrefs,
@@ -141,6 +182,14 @@ function applyConfigValue(
   if (key === 'disabledSkills' || key === 'disabledDesignSystems') {
     if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
       target[key] = value;
+    } else {
+      delete target[key];
+    }
+  }
+  if (key === 'awsBedrock') {
+    const validated = validateAwsBedrock(value);
+    if (validated !== undefined) {
+      target[key] = validated;
     } else {
       delete target[key];
     }
