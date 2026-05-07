@@ -33,6 +33,7 @@ export type MediaProviderId =
   | 'grok'
   | 'hyperframes'
   | 'nanobanana'
+  | 'bedrock'
   | 'bfl'
   | 'fal'
   | 'replicate'
@@ -114,6 +115,15 @@ export const MEDIA_PROVIDERS: MediaProvider[] = [
     defaultBaseUrl: 'https://generativelanguage.googleapis.com',
     docsUrl: 'https://ai.google.dev/gemini-api/docs/api-key',
     supportsCustomModel: true,
+  },
+  {
+    id: 'bedrock',
+    label: 'AWS Bedrock',
+    hint: 'Nova Canvas / Titan Image — uses your AWS credentials',
+    integrated: true,
+    credentialsRequired: false,
+    docsUrl:
+      'https://docs.aws.amazon.com/bedrock/latest/userguide/model-ids.html',
   },
   {
     id: 'bfl',
@@ -301,6 +311,22 @@ export const IMAGE_MODELS: MediaModel[] = [
     label: 'nano-banana-2',
     hint: 'Nano Banana · text-to-image',
     provider: 'nanobanana',
+    caps: ['t2i'],
+  },
+
+  // AWS Bedrock — text-to-image families. Auth via AWS SDK default chain.
+  {
+    id: 'bedrock-nova-canvas-v1',
+    label: 'nova-canvas-v1',
+    hint: 'AWS · Amazon Nova Canvas',
+    provider: 'bedrock',
+    caps: ['t2i'],
+  },
+  {
+    id: 'bedrock-titan-image-v2',
+    label: 'titan-image-g1-v2',
+    hint: 'AWS · Titan Image Generator G1 v2',
+    provider: 'bedrock',
     caps: ['t2i'],
   },
 

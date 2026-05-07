@@ -49,7 +49,18 @@ import type {
 export type { PreviewCommentMember, PreviewCommentSelectionKind } from '@open-design/contracts';
 
 export type ExecMode = 'daemon' | 'api';
-export type ApiProtocol = 'anthropic' | 'openai' | 'azure' | 'google';
+export type ApiProtocol = 'anthropic' | 'openai' | 'azure' | 'google' | 'bedrock';
+
+// AWS Bedrock BYOK config — mirrors BedrockPrefs in @open-design/contracts.
+// Credentials never reach the browser; the daemon resolves them via the
+// AWS SDK default credential chain. UI captures only region + optional
+// profile name.
+export interface BedrockPrefs {
+  region: string;
+  profile?: string;
+  useForAgent?: { claude?: boolean };
+  chatModelId?: string;
+}
 
 export type LiveArtifactTabId = `live:${string}`;
 export type ProjectWorkspaceTabId = string | LiveArtifactTabId;
@@ -278,6 +289,9 @@ export interface AppConfig {
   // IDs of skills/design-systems the user has explicitly disabled.
   disabledSkills?: string[];
   disabledDesignSystems?: string[];
+  // AWS Bedrock BYOK — round-tripped through the daemon's app-config so
+  // credentials never live in localStorage.
+  awsBedrock?: BedrockPrefs;
 }
 
 export interface ComposioSettings {

@@ -12,6 +12,7 @@ import { effectiveMaxTokens } from '../state/maxTokens';
 import type { AppConfig, ChatMessage } from '../types';
 import { streamMessageAnthropicProxy } from './anthropic-compatible';
 import { streamMessageAzure } from './azure-compatible';
+import { streamMessageBedrock } from './bedrock';
 import { streamMessageGoogle } from './google-compatible';
 import { isOpenAICompatible, streamMessageOpenAI } from './openai-compatible';
 
@@ -41,6 +42,9 @@ export async function streamMessage(
 ): Promise<void> {
   // Prefer the explicit Settings protocol; keep the legacy heuristic as a
   // fallback for configs saved before apiProtocol existed.
+  if (cfg.apiProtocol === 'bedrock') {
+    return streamMessageBedrock(cfg, system, history, signal, handlers);
+  }
   if (cfg.apiProtocol === 'azure') {
     return streamMessageAzure(cfg, system, history, signal, handlers);
   }

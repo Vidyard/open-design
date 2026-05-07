@@ -51,6 +51,11 @@ import {
 } from './media-models.js';
 import { resolveProviderConfig } from './media-config.js';
 import {
+  bedrockImageModelIdFor,
+  invokeBedrockImage,
+  loadBedrockConfig,
+} from './bedrock.js';
+import {
   ensureProject,
   kindFor,
   mimeFor,
@@ -364,6 +369,11 @@ export async function generateMedia(args) {
       bytes = result.bytes;
       providerNote = result.providerNote;
       suggestedExt = result.suggestedExt;
+    } else if (def.provider === 'bedrock' && surface === 'image') {
+      const result = await renderBedrockImage(ctx, projectRoot);
+      bytes = result.bytes;
+      providerNote = result.providerNote;
+      suggestedExt = result.suggestedExt;
     } else if (def.provider === 'grok' && surface === 'video') {
       const result = await renderGrokVideo(ctx, credentials, args.onProgress);
       bytes = result.bytes;
@@ -516,6 +526,39 @@ function defaultAspectFor(surface) {
 // ---------------------------------------------------------------------------
 
 const AZURE_DEFAULT_API_VERSION = '2024-02-01';
+
+// AWS Bedrock image generation. Bypasses resolveProviderConfig because
+// Bedrock auth is region-based (AWS SDK default credential chain), not
+// apiKey/baseUrl. Reads region/profile from awsBedrock app-config and
+// dispatches to the matching Bedrock model id (Nova Canvas / Titan G1 v2).
+async function renderBedrockImage(ctx, projectRoot) {
+  const odDataDir = (process.env.OD_DATA_DIR || '').trim();
+  const dataDir = odDataDir
+    ? (path.isAbsolute(odDataDir)
+        ? odDataDir
+        : path.resolve(projectRoot, odDataDir.replace(/^~\//, `${os.homedir()}/`)))
+    : path.join(projectRoot, '.od');
+  const cfg = await loadBedrockConfig(dataDir);
+  if (!cfg) {
+    throw new Error(
+      'AWS Bedrock not configured — set region in Settings → AWS Bedrock.',
+    );
+  }
+  const friendlyId = ctx.model;
+  const modelId = bedrockImageModelIdFor(friendlyId);
+  if (!modelId) {
+    throw new Error(`Unsupported Bedrock image model: ${friendlyId}`);
+  }
+  const result = await invokeBedrockImage({
+    cfg,
+    modelId,
+    prompt: ctx.prompt,
+    aspect: ctx.aspect,
+  });
+  const providerNote =
+    `bedrock/${modelId} · ${ctx.aspect} · ${result.bytes.length} bytes`;
+  return { bytes: result.bytes, providerNote, suggestedExt: '.png' };
+}
 
 async function renderOpenAIImage(ctx, credentials) {
   if (!credentials.apiKey) {

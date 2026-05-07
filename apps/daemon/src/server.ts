@@ -64,6 +64,12 @@ import {
 import { readMaskedConfig, writeConfig } from './media-config.js';
 import { agentCliEnvForAgent, readAppConfig, writeAppConfig } from './app-config.js';
 import {
+  loadBedrockConfig,
+  streamBedrockChat,
+  testBedrockConnection,
+} from './bedrock.js';
+import { loadAwsProfiles } from './aws-profiles.js';
+import {
   buildProjectArchive,
   buildBatchArchive,
   decodeMultipartFilename,
@@ -4011,12 +4017,30 @@ export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST
         def.promptViaStdin || def.streamFormat === 'acp-json-rpc'
           ? 'pipe'
           : 'ignore';
+      // Bedrock agent runtime: when the user has toggled "Use Bedrock for
+      // Claude Code agent runtime" and configured a region, route Claude
+      // Code through their AWS account instead of api.anthropic.com.
+      // Other agents have no documented Bedrock path so we only act on
+      // def.id === 'claude'.
+      let bedrockAgentEnv = null;
+      if (def.id === 'claude') {
+        const bedrockCfg = await loadBedrockConfig(RUNTIME_DATA_DIR);
+        const appCfg = await readAppConfig(RUNTIME_DATA_DIR);
+        if (bedrockCfg && appCfg?.awsBedrock?.useForAgent?.claude === true) {
+          bedrockAgentEnv = {
+            CLAUDE_CODE_USE_BEDROCK: '1',
+            AWS_REGION: bedrockCfg.region,
+            ...(bedrockCfg.profile ? { AWS_PROFILE: bedrockCfg.profile } : {}),
+          };
+        }
+      }
       const env = {
         ...spawnEnvForAgent(
           def.id,
           {
             ...createAgentRuntimeEnv(process.env, daemonUrl, toolTokenGrant),
             ...(def.env || {}),
+            ...(bedrockAgentEnv || {}),
           },
           configuredAgentEnv,
         ),
@@ -4834,6 +4858,103 @@ export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST
       sendProxyError(sse, err.message, { code: 'INTERNAL_ERROR' });
       sse.end();
     }
+  });
+
+  // Bedrock chat proxy. Unlike the other proxies, the request body carries
+  // no apiKey/baseUrl — credentials come from the daemon's awsBedrock
+  // app-config plus the AWS SDK default chain. Returns 503 with
+  // BEDROCK_NOT_CONFIGURED when no region is set so the web client can
+  // surface a clean "configure region" message.
+  app.post('/api/proxy/bedrock/stream', async (req, res) => {
+    const proxyBody = req.body || {};
+    const { modelId, systemPrompt, messages, maxTokens } = proxyBody;
+    if (!modelId || typeof modelId !== 'string') {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'modelId is required');
+    }
+
+    const cfg = await loadBedrockConfig(RUNTIME_DATA_DIR);
+    if (!cfg) {
+      return sendApiError(
+        res,
+        503,
+        'BEDROCK_NOT_CONFIGURED',
+        'AWS Bedrock not configured. Set region in Settings → AWS Bedrock.',
+      );
+    }
+
+    console.log(
+      `[proxy:bedrock] ${req.method} region=${cfg.region} model=${modelId}`,
+    );
+
+    const sse = createSseResponse(res);
+    sse.send('start', { model: modelId });
+    const abortController = new AbortController();
+    res.on('close', () => abortController.abort());
+
+    let ended = false;
+    try {
+      for await (const event of streamBedrockChat({
+        cfg,
+        modelId,
+        systemPrompt,
+        messages,
+        maxTokens,
+        signal: abortController.signal,
+      })) {
+        if (event.type === 'delta') {
+          sse.send('delta', { delta: event.text });
+        } else if (event.type === 'error') {
+          sendProxyError(sse, event.message, { code: 'UPSTREAM_UNAVAILABLE' });
+          ended = true;
+          break;
+        } else if (event.type === 'end') {
+          sse.send('end', {});
+          ended = true;
+          break;
+        }
+      }
+      if (!ended) sse.send('end', {});
+      sse.end();
+    } catch (err) {
+      console.error(`[proxy:bedrock] internal error: ${err.message}`);
+      sendProxyError(sse, err.message, { code: 'INTERNAL_ERROR' });
+      sse.end();
+    }
+  });
+
+  // Test-connection helper for Settings UI. Uses the Bedrock control plane
+  // (ListFoundationModels) — no token cost, no compute. Returns 200 with
+  // {ok:false, error} on auth/connectivity failures so the UI can render
+  // the message inline without parsing HTTP error shapes.
+  app.post('/api/aws/bedrock/test', async (req, res) => {
+    const body = req.body || {};
+    const region = typeof body.region === 'string' ? body.region.trim() : '';
+    const profile =
+      typeof body.profile === 'string' && body.profile.trim()
+        ? body.profile.trim()
+        : undefined;
+    if (!region || !/^[a-z]{2}-[a-z-]+-\d$/.test(region)) {
+      return sendApiError(
+        res,
+        400,
+        'BAD_REQUEST',
+        'region is required and must look like e.g. us-west-2',
+      );
+    }
+    if (profile && !/^[A-Za-z0-9._-]{1,64}$/.test(profile)) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'invalid profile name');
+    }
+    const result = await testBedrockConnection({ region, ...(profile ? { profile } : {}) });
+    return res.json(result);
+  });
+
+  // Discover AWS profile names from shared-config files. Returns names
+  // only — never credentials. Used by the Settings UI to populate the
+  // Bedrock profile dropdown so users pick from a known list rather than
+  // typing.
+  app.get('/api/aws/profiles', async (_req, res) => {
+    const result = await loadAwsProfiles();
+    return res.json(result);
   });
 
   // Wait for `listen` to bind so callers always see the resolved URL —
