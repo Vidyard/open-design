@@ -31,9 +31,11 @@ const PURPLE_HEXES = [
   // Tailwind violet / purple — the original AI-slop palette.
   '#a855f7', '#9333ea', '#7c3aed', '#6d28d9', '#581c87',
   '#8b5cf6', '#a78bfa', '#c4b5fd', '#ddd6fe', '#ede9fe',
-  // Tailwind indigo — Refero's #1 reported AI tell. Common solid uses
-  // (button fill, accent badge), not just gradients, are flagged
-  // separately by `ai-default-indigo` below.
+  // Tailwind indigo — included here so two-stop trust gradients
+  // containing indigo still fire as purple-gradient. The solid
+  // indigo-as-accent check that previously paired with this list
+  // was removed: CY's brand accent is indigo (#5e5cfa) so a blanket
+  // "indigo is LLM slop" rule fights the house style.
   '#6366f1', '#4f46e5', '#4338ca', '#3730a3', '#312e81',
   '#818cf8', '#a5b4fc', '#c7d2fe', '#e0e7ff', '#eef2ff',
 ];
@@ -57,19 +59,6 @@ const TRUST_GRADIENT_CYAN_HEXES = [
   // Tailwind cyan 500–900 + 400/300/200.
   '#06b6d4', '#0891b2', '#0e7490', '#155e75', '#164e63',
   '#22d3ee', '#67e8f9', '#a5f3fc',
-];
-
-// Subset of PURPLE_HEXES that constitute the canonical "default LLM
-// accent" — even a single solid use is a tell. The DESIGN.md provides
-// `var(--accent)`; if a brief truly needs indigo, the design system
-// should encode it explicitly so we know it's intentional.
-//
-// Keep this in sync with the explicit list in `craft/anti-ai-slop.md`'s
-// "Default Tailwind indigo as accent" cardinal-sin entry — the prompt
-// contract documents the exact set the lint enforces.
-const AI_DEFAULT_INDIGO = [
-  '#6366f1', '#4f46e5', '#4338ca', '#3730a3',
-  '#8b5cf6', '#7c3aed', '#a855f7',
 ];
 
 const SLOP_EMOJI = [
@@ -172,36 +161,6 @@ export function lintArtifact(rawHtml) {
         fix: 'Replace the gradient with a flat surface (var(--bg) or var(--surface)) or use a single design-token color. Two-stop blue→cyan trust gradients are a SaaS hero cliché.',
         snippet: clip(tg),
       });
-    }
-  }
-
-  // ── P0-1b: solid AI-default indigo as accent ──────────────────────
-  // Even outside a gradient, a single use of #6366f1 et al. is the
-  // textbook LLM tell. We only fire if the existing purple-gradient
-  // check didn't already, since they overlap in spirit. Strip
-  // token-definition blocks first: a brief whose accent is
-  // intentionally indigo declares it as `--accent: #6366f1` inside
-  // a selector list containing `:root` (or another known global
-  // theme scope like `html` / bare `[data-theme="..."]`) and uses
-  // var(--accent) downstream. That is the design system speaking,
-  // not the model defaulting, and must not fire. Component-local
-  // variables (e.g. `.cta { --cta-bg: #6366f1; }`) stay in scope so
-  // the lint still catches indigo laundered through a local var.
-  if (out.find((f) => f.id === 'purple-gradient') === undefined) {
-    const htmlForIndigo = stripTokenBlocks(html);
-    for (const hex of AI_DEFAULT_INDIGO) {
-      const re = new RegExp(escapeRe(hex), 'i');
-      const m = re.exec(htmlForIndigo);
-      if (m) {
-        out.push({
-          severity: 'P0',
-          id: 'ai-default-indigo',
-          message: `Found a default LLM accent color (${hex}) — this is the most-reported AI design tell.`,
-          fix: 'Replace with var(--accent) from the active DESIGN.md. If the brief truly requires indigo, encode it as the design system\'s accent so it reads as intentional, not default.',
-          snippet: clip(m[0]),
-        });
-        break;
-      }
     }
   }
 
@@ -842,99 +801,6 @@ function resolveCssVars(body, tokens) {
     out = next;
   }
   return out;
-}
-
-// Remove CSS rule blocks that look like design-token definitions.
-// Operates only on CSS extracted from <style> blocks — running the
-// rule-shaped regex against the full HTML string makes the first
-// selector capture include leading text like `<style>`, which then
-// fails the `:root` selector test.
-//
-// A rule is treated as a token block only when ALL THREE conditions hold:
-//   1. every selector in the list is a global theme-scope selector
-//      (`:root`, `:root[data-theme="..."]`, `html`, `body`, or a bare
-//      attribute selector for a known global-theme switch —
-//      `data-theme`, `data-color-scheme`, `data-mode`). Selector lists
-//      that mix in a component selector — e.g.
-//      `:root, .cta { --cta-bg: #6366f1 }` — or that target an
-//      arbitrary component/state attribute like `[data-variant="primary"]`
-//      or `[aria-current="page"]` fail this test, so indigo laundered
-//      through a local var or rule still trips the lint.
-//   2. its body is token-shaped: only CSS custom properties
-//      (`--name: value`), with a small allowlist for global-theme
-//      metadata such as `color-scheme` that legitimately accompanies
-//      tokens in `:root` and cannot smuggle a visible color.
-//      A non-token declaration on `:root` (e.g.
-//      `:root { background: #6366f1 }`) keeps the rule in scope so
-//      the indigo check fires.
-//   3. no token in the body launders an indigo hex through a
-//      non-`--accent` name. The craft contract's escape hatch is to
-//      encode indigo as the active design system's `--accent` token;
-//      anything else (`:root { --primary: #6366f1 }`,
-//      `:root { --button-bg: #4f46e5 }`) is still the LLM-default
-//      color hidden behind an arbitrary token name and must stay in
-//      scope of the indigo scan.
-function stripTokenBlocks(input) {
-  return input.replace(
-    /(<style[^>]*>)([\s\S]*?)(<\/style>)/gi,
-    (_m, open, css, close) => `${open}${stripTokenBlocksFromCss(css)}${close}`,
-  );
-}
-
-function stripTokenBlocksFromCss(css) {
-  // Strip CSS comments before any structural matching: a block like
-  // `:root { /* brand accent */ --accent: #6366f1; }` would otherwise
-  // produce a declaration fragment that begins with the comment,
-  // fail `isTokenShapedDeclaration`, and leave a legitimate token
-  // definition in scope of the indigo scan.
-  const cleaned = css.replace(/\/\*[\s\S]*?\*\//g, '');
-  // The body alternation is `[^{}]*` (not `[^}]*`) so the regex matches
-  // only innermost `selector { body }` rules. That lets us recognize
-  // global token blocks nested inside at-rule wrappers — e.g.
-  // `@media (prefers-color-scheme: dark) { :root { --accent: #6366f1 } }`
-  // — by matching the inner `:root { ... }` directly. The outer
-  // `@media` wrapper is preserved with the inner token block stripped,
-  // so the indigo scan no longer fires on legitimate responsive theme
-  // declarations.
-  return cleaned.replace(/([^{}]*)\{([^{}]*)\}/g, (full, selector, body) => {
-    const sel = (selector || '').trim();
-    if (!selectorListIsGlobalThemeScope(sel)) return full;
-    const decls = (body || '')
-      .split(';')
-      .map((d) => d.trim())
-      .filter(Boolean);
-    if (decls.length === 0) return full;
-    const tokenShaped = decls.every(isTokenShapedDeclaration);
-    if (!tokenShaped) return full;
-    // The `--accent` escape hatch is for `--accent` only. Any other
-    // global token whose value carries an AI-default indigo hex is
-    // still laundering the LLM-default color through an arbitrary
-    // name (`--primary: #6366f1`, `--button-bg: #4f46e5`, …). Keep
-    // the rule in scope so the indigo lint fires on the literal hex.
-    if (decls.some(declarationLaundersIndigo)) return full;
-    return '';
-  });
-}
-
-function declarationLaundersIndigo(decl) {
-  const m = /^(--[\w-]+)\s*:\s*(.+)$/.exec(decl);
-  if (!m) return false;
-  if (m[1].toLowerCase() === '--accent') return false;
-  const value = m[2].toLowerCase();
-  for (const hex of AI_DEFAULT_INDIGO) {
-    if (value.includes(hex.toLowerCase())) return true;
-  }
-  return false;
-}
-
-function isTokenShapedDeclaration(decl) {
-  // CSS custom property — the canonical token shape.
-  if (/^--[\w-]+\s*:/.test(decl)) return true;
-  // Global-theme metadata that legitimately accompanies tokens in
-  // `:root` / `html` / `[data-theme="..."]` and whose values are
-  // keywords, so they cannot smuggle a hardcoded color.
-  if (/^color-scheme\s*:/i.test(decl)) return true;
-  return false;
 }
 
 function selectorListIsGlobalThemeScope(selector) {

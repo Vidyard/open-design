@@ -11,34 +11,36 @@ honest.
 > Adapted from [refero_skill](https://github.com/referodesign/refero_skill)
 > (MIT), tightened to match Open Design's lint surface.
 
-## The seven cardinal sins
+## The six cardinal sins
 
 These are the patterns the linter blocks at P0 (must-fix):
 
-1. **Default Tailwind indigo as accent** — exactly `#6366f1`, `#4f46e5`,
-   `#4338ca`, `#3730a3`, `#8b5cf6`, `#7c3aed`, `#a855f7`. The active
-   `DESIGN.md` provides `--accent`; use it. Indigo is the textbook AI
-   tell. (The daemon's `lint-artifact` flags any of these as a solid
-   accent; keep this list in sync with `AI_DEFAULT_INDIGO` in
-   `apps/daemon/src/lint-artifact.ts`.)
-2. **Two-stop "trust" gradient on the hero** — purple→blue, blue→cyan,
+1. **Two-stop "trust" gradient on the hero** — purple→blue, blue→cyan,
    indigo→pink. A flat surface + intentional type beats this every
    time.
-3. **Emoji as feature icons** — `✨`, `🚀`, `🎯`, `⚡`, `🔥`, `💡`
+2. **Emoji as feature icons** — `✨`, `🚀`, `🎯`, `⚡`, `🔥`, `💡`
    inside `<h*>`, `<button>`, `<li>`, or `class*="icon"`. Use
    1.6–1.8px-stroke monoline SVG with `currentColor`.
-4. **Sans-serif on display text when the seed binds a serif** — h1/h2
+3. **Sans-serif on display text when the seed binds a serif** — h1/h2
    must use `var(--font-display)`, not a hardcoded Inter / Roboto /
    `system-ui`.
-5. **Rounded card with a colored left-border accent** — the canonical
+4. **Rounded card with a colored left-border accent** — the canonical
    "AI dashboard tile" shape. Drop either the radius or the left
    border.
-6. **Invented metrics** — "10× faster", "99.9% uptime", "3× more
+5. **Invented metrics** — "10× faster", "99.9% uptime", "3× more
    productive". Either pull from a real source or use a labelled
    placeholder.
-7. **Filler copy** — `lorem ipsum`, `feature one / two / three`,
+6. **Filler copy** — `lorem ipsum`, `feature one / two / three`,
    `placeholder text`, `sample content`. An empty section is a design
    problem to solve with composition, not by inventing words.
+
+> **Note on indigo.** A blanket "no indigo accents" rule used to sit
+> at the top of this list. It was removed when Construction Yard
+> became the house default — CY's brand accent is Indigo-400
+> (`#5e5cfa`), so the old rule flagged every CY artifact as slop.
+> Indigo inside a two-stop gradient still fires via rule 1, and the
+> general principle holds: use `var(--accent)` from the active
+> design system, never a hard-coded Tailwind default.
 
 ## Soft tells (P1 — should fix)
 

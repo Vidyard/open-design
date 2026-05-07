@@ -174,7 +174,21 @@ export function App() {
           }
           if (!next.designSystemId && dsList.length > 0) {
             next.designSystemId =
-              dsList.find((d) => d.id === 'default')?.id ?? dsList[0]!.id;
+              dsList.find((d) => d.id === 'construction-yard')?.id ??
+              dsList.find((d) => d.id === 'default')?.id ??
+              dsList[0]!.id;
+          } else if (
+            next.designSystemId === 'default' &&
+            dsList.some((d) => d.id === 'construction-yard')
+          ) {
+            // One-shot silent migration: `'default'` was the legacy
+            // autopick marker ("Neutral Modern"). Any user who never
+            // deliberately chose a brand is sitting on that value —
+            // upgrade them to the house default.
+            console.info(
+              '[open-design] migrating default design system: default → construction-yard',
+            );
+            next.designSystemId = 'construction-yard';
           }
         }
         saveConfig(next);
